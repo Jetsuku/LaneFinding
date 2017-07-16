@@ -1,0 +1,9 @@
+import matplotlib.pyplot as plt
+import matplotlib.image as pimg
+import numpy as np
+
+image = pimg.imread('/home/jesse/Development/Python/exit-ramp.jpg')
+plt.imshow(image)
+
+#Open Interactive Image Viewing
+plt.show()

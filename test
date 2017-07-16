@@ -1,0 +1,3 @@
+measurements = ['red', 'green']
+
+print range(measurements)
