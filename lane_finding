@@ -1,0 +1,218 @@
+#importing some useful packages
+import matplotlib.pyplot as plt
+import matplotlib.image as mpimg
+import numpy as np
+import cv2
+import math
+import os
+from moviepy.editor import VideoFileClip
+from IPython.display import HTML
+
+### HELPER FUNCTION DEFINITIONS ###
+
+#Convert Image to Grayscale
+def grayscale(img):
+    """Applies the Grayscale transform
+    This will return an image with only one color channel
+    but NOTE: to see the returned image as grayscale
+    (assuming your grayscaled image is called 'gray')
+    you should call plt.imshow(gray, cmap='gray')"""
+    return cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+    # Or use BGR2GRAY if you read an image with cv2.imread()
+    # return cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+#Polygon Cutout of Region of Interest
+def region_of_interest(img, vertices):
+    """
+    Applies an image mask.
+
+    Only keeps the region of the image defined by the polygon
+    formed from `vertices`. The rest of the image is set to black.
+    """
+    #defining a blank mask to start with
+    mask = np.zeros_like(img)
+
+    #defining a 3 channel or 1 channel color to fill the mask with depending on the input image
+    if len(img.shape) > 2:
+        channel_count = img.shape[2]  # i.e. 3 or 4 depending on your image
+        ignore_mask_color = (255,) * channel_count
+    else:
+        ignore_mask_color = 255
+
+    #filling pixels inside the polygon defined by "vertices" with the fill color
+    cv2.fillPoly(mask, vertices, ignore_mask_color)
+
+    #returning the image only where mask pixels are nonzero
+    masked_image = cv2.bitwise_and(img, mask)
+    return masked_image
+
+#Apply Gaussian Blur (Suppress Image Noise)
+def gaussian_blur(img, kernel_size):
+    """Applies a Gaussian Noise kernel"""
+    return cv2.GaussianBlur(img, (kernel_size, kernel_size), 0) #choose only odd numbers for kernal_size
+
+#Canny Edge Detection
+def canny(img, low_threshold, high_threshold):
+    """Applies the Canny transform"""
+    return cv2.Canny(img, low_threshold, high_threshold) #low_threshold:high_threshold ratio = ~1:2 to ~1:3
+
+#Hough Transform
+def hough_lines(img, rho, theta, threshold, min_line_len, max_line_gap):
+    """
+    `img` should be the output of a Canny transform.
+
+    Returns an image with hough lines drawn.
+    """
+    lines = cv2.HoughLinesP(img, rho, theta, threshold, np.array([]), minLineLength=min_line_len, maxLineGap=max_line_gap)
+    line_img = np.zeros((img.shape[0], img.shape[1], 3), dtype=np.uint8)
+    draw_lines(line_img, lines)
+    return (line_img, lines)
+
+#Draw Lines
+def draw_lines(img, lines, color=[255, 0, 0], thickness=4):
+    """
+    NOTE: this is the function you might want to use as a starting point once you want to
+    average/extrapolate the line segments you detect to map out the full
+    extent of the lane (going from the result shown in raw-lines-example.mp4
+    to that shown in P1_example.mp4).
+
+    Think about things like separating line segments by their
+    slope ((y2-y1)/(x2-x1)) to decide which segments are part of the left
+    line vs. the right line.  Then, you can average the position of each of
+    the lines and extrapolate to the top and bottom of the lane.
+
+    This function draws `lines` with `color` and `thickness`.
+    Lines are drawn on the image inplace (mutates the image).
+    If you want to make the lines semi-transparent, think about combining
+    this function with the weighted_img() function below
+    """
+
+    #Calculate Slope of Lines
+    diff_y = np.array(lines[:,0,3] - lines[:,0,1]) #y values
+    diff_x = np.array(lines[:,0,0] - lines[:,0,2]) #x values
+    slope = diff_y/diff_x
+
+    #Separate Positive and Negative Slope Lines, and Remove Points Outide Desired Slope Range [0.5 0.9] and [-0.9 -0.5]
+    pos_lines = lines[(slope > 0) & (slope > 0.55) & (slope < 0.85)]
+    neg_lines = lines[(slope < 0) & (slope < -0.55) & (slope > -0.85)]
+
+    pos_lines_y = np.append(pos_lines[:,0,1],pos_lines[:,0,3])
+    pos_lines_x = np.append(pos_lines[:,0,0],pos_lines[:,0,2])
+    neg_lines_y = np.append(neg_lines[:,0,1],neg_lines[:,0,3])
+    neg_lines_x = np.append(neg_lines[:,0,0],neg_lines[:,0,2])
+
+    #Calculate Best Fit Line x and y Pixel Location for Plotting
+    pos_bestfit_x = np.linspace(0, img.shape[1], 200)
+    pos_bestfit_y = np.zeros(len(pos_bestfit_x))
+    neg_bestfit_x = np.linspace(0, img.shape[1], 200)
+    neg_bestfit_y = np.zeros(len(neg_bestfit_x))
+
+    if pos_lines.size:
+        bestfit_pos_params = np.polyfit(pos_lines_x,pos_lines_y,1)
+
+        for i, entry in enumerate(pos_bestfit_x):
+            pos_bestfit_y[i] = bestfit_pos_params[1] + bestfit_pos_params[0]*entry
+
+        #Remove Entires Outside Range of Houge Lines, Convert Float to Int32 for cv2.line Function
+        rem_arg = np.argwhere((pos_bestfit_y < 5*img.shape[0]/8) | (pos_bestfit_y > img.shape[0]))
+        pos_bestfit_y = np.delete(pos_bestfit_y,rem_arg)
+        pos_bestfit_x = np.delete(pos_bestfit_x,rem_arg)
+        pos_bestfit_x = pos_bestfit_x.astype(np.int32)
+        pos_bestfit_y = pos_bestfit_y.astype(np.int32)
+
+        #Plot Best Fit Lines
+        for i, entry in enumerate(pos_bestfit_y[:-1]):
+            cv2.line(img, (pos_bestfit_x[i], pos_bestfit_y[i]), (pos_bestfit_x[i+1], pos_bestfit_y[i+1]), color, thickness)
+
+    if neg_lines.size:
+        bestfit_neg_params = np.polyfit(neg_lines_x,neg_lines_y,1)
+
+        for i, entry in enumerate(neg_bestfit_x):
+            neg_bestfit_y[i] = bestfit_neg_params[1] + bestfit_neg_params[0]*neg_bestfit_x[i]
+
+        #Remove Entires Outside Range of Houge Lines, Convert Float to Int32 for cv2.line Function
+        rem_arg = np.argwhere((neg_bestfit_y < 5*img.shape[0]/8) | (neg_bestfit_y > img.shape[0]))
+        neg_bestfit_y = np.delete(neg_bestfit_y,rem_arg)
+        neg_bestfit_x = np.delete(neg_bestfit_x,rem_arg)
+        neg_bestfit_x = neg_bestfit_x.astype(np.int32)
+        neg_bestfit_y = neg_bestfit_y.astype(np.int32)
+
+        #Plot Best Fit Lines
+        for i, entry in enumerate(neg_bestfit_y[:-1]):
+            cv2.line(img, (neg_bestfit_x[i], neg_bestfit_y[i]), (neg_bestfit_x[i+1], neg_bestfit_y[i+1]), color, thickness)
+
+
+#Add Hough Transformed Image to Original
+def weighted_img(img, initial_img, α=0.8, β=1.0, λ=0.):
+    """
+    `img` is the output of the hough_lines(), An image with lines drawn on it.
+    Should be a blank image (all black) with lines drawn on it.
+
+    `initial_img` should be the image before any processing.
+
+    The result image is computed as follows:
+
+    initial_img * α + img * β + λ
+    NOTE: initial_img and img must be the same shape!
+    """
+    return cv2.addWeighted(initial_img, α, img, β, λ)
+
+### LANE FINDING ALGORITHM ###
+
+#Read In Image
+#image_list = os.listdir("CarND-LaneLines-P1/test_images")
+#print(image_list)
+#image = mpimg.imread('./CarND-LaneLines-P1/test_images/' + image_list[4]) #Image Directory
+
+def process_image(image):
+
+    #Lane Color Detection
+    ylane_mask = cv2.inRange(image,np.array([180,160,70]),np.array([245, 220, 130])) #Yellow Lane Detection
+    wlane_mask = cv2.inRange(image,np.array([235,235,235]),np.array([255, 255, 255])) #White Lane Detection
+    ylane_image = cv2.bitwise_and(image,image, mask = ylane_mask)
+    wlane_image = cv2.bitwise_and(image,image, mask = wlane_mask)
+    filtered_image = cv2.addWeighted(ylane_image, 1.0, wlane_image, 1.0, 0.0)
+
+    #Grayscale Image
+    gray_image = grayscale(filtered_image) #Convert Image to Grayscale
+
+    #Apply Gaussian Blur
+    gray_image_blur = gaussian_blur(gray_image, 9)
+
+    #Apply Canny Edge Detection
+    gray_image_blur_gradient = canny(gray_image_blur, 60, 130)
+
+    #Cutout Region of Interest
+    define_region = np.array([[(1*image.shape[1]/8,image.shape[0]),(3*image.shape[1]/8, 5*image.shape[0]/8), (5*image.shape[1]/8, 5*image.shape[0]/8), (7*image.shape[1]/8, image.shape[0])]], dtype = np.int32)
+    gray_image_blur_gradient_masked = region_of_interest(gray_image_blur_gradient, define_region)
+
+    #Perform Hough transform
+    rho = 1 #Distance Resolution in Hough Space
+    theta = np.pi/180 #Theta Resolution in Hough Space
+    threshold = 12 #Minimum Intersections for Line Recognition
+    min_line_len = 8 #Minimum Pixel Length for Line Recognition
+    max_line_gap = 8 #Max Pixel Gap for Line Recognition
+    [image_htrans, lines] = hough_lines(gray_image_blur_gradient_masked, rho, theta, threshold, min_line_len, max_line_gap)
+
+    #Add Hough Transformed Image to Original
+    image_weighted = weighted_img(image_htrans, image, α=0.8, β=1., λ=0.)
+
+    return image_weighted
+
+white_output = './CarND-LaneLines-P1/test_videos_output/challenge.mp4'
+## To speed up the testing process you may want to try your pipeline on a shorter subclip of the video
+## To do so add .subclip(start_second,end_second) to the end of the line below
+## Where start_second and end_second are integer values representing the start and end of the subclip
+## You may also uncomment the following line for a subclip of the first 5 seconds
+clip1 = VideoFileClip("CarND-LaneLines-P1/test_videos/challenge.mp4")
+white_clip = clip1.fl_image(process_image) #NOTE: this function expects color images!!
+white_clip.write_videofile(white_output, audio=False)
+
+### CHECK IMAGE #####
+
+#Printing Out Some Stats and Plotting
+#print('This image is:', type(gray_image), 'with dimensions:', image.shape)
+#plt.imshow(image_weighted, cmap = 'gray')  # if you wanted to show a single color channel image called 'gray', for example, call as plt.imshow(gray, cmap='gray')
+
+#Open Image Plotting
+#plt.show()
